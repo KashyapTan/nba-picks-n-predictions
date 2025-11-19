@@ -1,5 +1,5 @@
-from formula import print_player_season_stats, print_player_vs_team_stats
-from percentile import print_player_percentile, print_player_percentile_vs_team
+from helper.formula import print_player_season_stats, print_player_vs_team_stats
+from helper.percentile import print_player_percentile, print_player_percentile_vs_team
 from c import clear_charts_folder
 
 def get_stats(player, team):
@@ -13,8 +13,8 @@ def get_stats(player, team):
     print_player_percentile_vs_team(player, "2025-26", team)
     
 
-player = ''
-team = ''
+player = 'James Harden'
+team = '76ers'
 
 clear_charts_folder()
 get_stats(player, team)

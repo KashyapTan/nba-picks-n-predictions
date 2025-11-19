@@ -165,7 +165,7 @@ def plot_player_percentiles_season(player_name, season, save_path=None):
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved to {save_path}")
+        # print(f"Plot saved to {save_path}")
     else:
         plt.show()
     
@@ -364,7 +364,7 @@ def plot_player_percentiles_vs_team(player_name, season, opponent_team, save_pat
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved to {save_path}")
+        # print(f"Plot saved to {save_path}")
     else:
         plt.show()
     
