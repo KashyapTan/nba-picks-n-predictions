@@ -8,6 +8,7 @@ from PIL import Image, ImageTk
 import os
 import pandas as pd
 from nba_api.stats.static import teams
+from nba_api.stats.endpoints import boxscoretraditionalv2, boxscoretraditionalv3
 from c import clear_charts_folder
 
 class NBAStatsGUI:
@@ -328,13 +329,23 @@ class NBAStatsGUI:
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", style="Custom.Vertical.TScrollbar")
         
         # Create treeview
-        columns = ['GAME_DATE', 'MATCHUP', 'WL', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
+        visible_columns = ['GAME_DATE', 'MATCHUP', 'WL', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
                    'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT', 'FTM', 'FTA', 'FT_PCT', 'TS_PCT', 'PLUS_MINUS']
         # Filter to only include columns that exist in the dataframe
-        columns = [col for col in columns if col in game_log_df.columns]
+        visible_columns = [col for col in visible_columns if col in game_log_df.columns]
         
-        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', 
+        # Add Game_ID to columns if it exists, but not to visible_columns
+        columns = list(visible_columns)
+        if 'Game_ID' in game_log_df.columns:
+            columns.append('Game_ID')
+            # Ensure Game_ID is string to prevent float conversion issues
+            game_log_df['Game_ID'] = game_log_df['Game_ID'].astype(str)
+        
+        tree = ttk.Treeview(tree_frame, columns=columns, displaycolumns=visible_columns, show='headings', 
                            yscrollcommand=vsb.set, height=15)
+        
+        # Bind double click to show box score
+        tree.bind("<Double-1>", self.on_game_click)
         
         vsb.config(command=tree.yview)
         
@@ -370,7 +381,7 @@ class NBAStatsGUI:
             'TS_PCT': 'TS%'
         }
         
-        for col in columns:
+        for col in visible_columns:
             header_text = column_headers.get(col, col)
             tree.heading(col, text=header_text, anchor='center')
             width = column_widths.get(col, 80)
@@ -419,7 +430,7 @@ class NBAStatsGUI:
                         values.append(f"{pm:+.0f}" if pm != 0 else "0")
                     except:
                         values.append(str(val))
-                elif col in ['GAME_DATE', 'MATCHUP', 'WL']:
+                elif col in ['GAME_DATE', 'MATCHUP', 'WL', 'Game_ID']:
                     # Text columns - keep as is, show empty if blank
                     values.append(str(val) if val else "")
                 else:
@@ -694,6 +705,296 @@ class NBAStatsGUI:
         
     def enable_fetch_button(self):
         self.fetch_btn.config(state='normal', text='Fetch Statistics')
+    
+    def on_game_click(self, event):
+        """Handle click on game log row"""
+        tree = event.widget
+        selection = tree.selection()
+        if not selection:
+            return
+        
+        item = selection[0]
+        values = tree.item(item, 'values')
+        
+        # Get columns to find index of Game_ID
+        # Note: tree['columns'] returns the column identifiers
+        columns = tree['columns']
+        
+        try:
+            if 'Game_ID' in columns:
+                game_id_idx = columns.index('Game_ID')
+                game_id = values[game_id_idx]
+                print(f"DEBUG: Clicked Game ID: '{game_id}'")
+                self.show_box_score(game_id)
+            else:
+                print("DEBUG: Game_ID column not found in tree columns")
+                messagebox.showerror("Error", "Game ID not found in data")
+        except ValueError:
+            # Game_ID not found in columns
+            pass
+        except Exception as e:
+            print(f"DEBUG: Error in on_game_click: {e}")
+            messagebox.showerror("Error", f"Could not open box score: {str(e)}")
+
+    def show_box_score(self, game_id):
+        """Fetch and display box score for a game"""
+        try:
+            # Ensure game_id is a string and padded with zeros to 10 digits
+            game_id = str(game_id).strip()
+            
+            # Handle potential float conversion (e.g. "22301195.0")
+            if game_id.endswith('.0'):
+                game_id = game_id[:-2]
+            
+            if game_id.lower() == 'nan':
+                print("DEBUG: Game ID is 'nan'")
+                messagebox.showerror("Error", "Invalid Game ID (nan)")
+                return
+                
+            if not game_id:
+                print("DEBUG: Empty Game ID")
+                return
+                
+            game_id = game_id.zfill(10)
+            print(f"DEBUG: Fetching box score for Game ID: '{game_id}'")
+            
+            # Create loading window
+            loading = tk.Toplevel(self.root)
+            loading.title("Loading...")
+            loading.geometry("300x100")
+            tk.Label(loading, text="Fetching Box Score...", font=('Arial', 12)).pack(expand=True)
+            loading.update()
+            
+            # Fetch data
+            try:
+                # Try V2 first
+                box = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
+                print("DEBUG: Box score V2 object created")
+                
+                # Initialize empty dataframes
+                player_stats = pd.DataFrame()
+                team_stats = pd.DataFrame()
+                
+                if box.player_stats:
+                    player_stats = box.player_stats.get_data_frame()
+                
+                if box.team_stats:
+                    team_stats = box.team_stats.get_data_frame()
+                
+                # If V2 is empty, try V3
+                if player_stats.empty:
+                    print("DEBUG: V2 empty, trying V3...")
+                    box_v3 = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id)
+                    
+                    if box_v3.player_stats:
+                        v3_player = box_v3.player_stats.get_data_frame()
+                        if not v3_player.empty:
+                            # Map V3 columns to V2 format
+                            v3_player['PLAYER_NAME'] = v3_player['firstName'] + " " + v3_player['familyName']
+                            
+                            column_map = {
+                                'teamTricode': 'TEAM_ABBREVIATION',
+                                'minutes': 'MIN',
+                                'points': 'PTS',
+                                'reboundsTotal': 'REB',
+                                'assists': 'AST',
+                                'steals': 'STL',
+                                'blocks': 'BLK',
+                                'turnovers': 'TO',
+                                'foulsPersonal': 'PF',
+                                'fieldGoalsMade': 'FGM',
+                                'fieldGoalsAttempted': 'FGA',
+                                'fieldGoalsPercentage': 'FG_PCT',
+                                'threePointersMade': 'FG3M',
+                                'threePointersAttempted': 'FG3A',
+                                'threePointersPercentage': 'FG3_PCT',
+                                'freeThrowsMade': 'FTM',
+                                'freeThrowsAttempted': 'FTA',
+                                'freeThrowsPercentage': 'FT_PCT',
+                                'plusMinusPoints': 'PLUS_MINUS'
+                            }
+                            player_stats = v3_player.rename(columns=column_map)
+                            print(f"DEBUG: V3 Player stats shape: {player_stats.shape}")
+
+                    if box_v3.team_stats:
+                        v3_team = box_v3.team_stats.get_data_frame()
+                        if not v3_team.empty:
+                            column_map_team = {
+                                'teamTricode': 'TEAM_ABBREVIATION',
+                                'points': 'PTS',
+                                # Add other team stats if needed for header
+                            }
+                            team_stats = v3_team.rename(columns=column_map_team)
+                            print(f"DEBUG: V3 Team stats shape: {team_stats.shape}")
+
+            except Exception as e:
+                print(f"DEBUG: Error fetching box score: {e}")
+                loading.destroy()
+                messagebox.showerror("Error", f"API Error: {e}")
+                return
+            
+            loading.destroy()
+            
+            if player_stats.empty:
+                print("DEBUG: Player stats DataFrame is empty")
+                messagebox.showinfo("Info", f"No box score data available for game {game_id}.")
+                return
+            
+            # Create Box Score Window
+            bs_window = tk.Toplevel(self.root)
+            bs_window.title(f"Box Score - {game_id}")
+            bs_window.geometry("1200x950")
+            bs_window.configure(bg='#000000')
+            
+            # Create scrollable canvas
+            canvas = tk.Canvas(bs_window, bg='#000000', highlightthickness=0)
+            scrollbar = ttk.Scrollbar(bs_window, orient="vertical", command=canvas.yview)
+            scrollable_frame = ttk.Frame(canvas)
+            
+            # Configure style for box score
+            style = ttk.Style()
+            style.configure("BoxScore.Treeview", 
+                          background="#0a0a0a",
+                          foreground="#ffffff",
+                          fieldbackground="#0a0a0a",
+                          rowheight=25)
+            style.configure("BoxScore.Treeview.Heading",
+                          background="#1a1a1a",
+                          foreground="#cccccc",
+                          font=('Arial', 9, 'bold'))
+            
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+            
+            # Create window in canvas and keep reference to ID
+            window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            
+            # Ensure frame expands to fill canvas width
+            def on_canvas_configure(event):
+                canvas.itemconfig(window_id, width=event.width)
+            
+            canvas.bind("<Configure>", on_canvas_configure)
+            
+            canvas.configure(yscrollcommand=scrollbar.set)
+            
+            canvas.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            
+            # Display Matchup Header
+            if not team_stats.empty:
+                try:
+                    team1 = team_stats.iloc[0]
+                    team2 = team_stats.iloc[1]
+                    
+                    header_text = f"{team1['TEAM_ABBREVIATION']} {team1['PTS']} - {team2['PTS']} {team2['TEAM_ABBREVIATION']}"
+                    tk.Label(scrollable_frame, text=header_text, bg='#000000', fg='#ffffff',
+                            font=('Arial', 20, 'bold'), pady=20).pack(fill=tk.X)
+                except Exception:
+                    pass # Skip header if data format is unexpected
+            
+            # Display Player Stats for each team
+            if 'TEAM_ABBREVIATION' in player_stats.columns:
+                teams_list = player_stats['TEAM_ABBREVIATION'].unique()
+                
+                for team_abbr in teams_list:
+                    team_players = player_stats[player_stats['TEAM_ABBREVIATION'] == team_abbr].copy()
+                    
+                    # Sort by PRA (Points + Rebounds + Assists) then Minutes
+                    try:
+                        # Ensure numeric columns for calculation
+                        calc_cols = ['PTS', 'REB', 'AST']
+                        for col in calc_cols:
+                            if col in team_players.columns:
+                                team_players[col] = pd.to_numeric(team_players[col], errors='coerce').fillna(0)
+                        
+                        # Calculate PRA
+                        pra_series = pd.Series(0, index=team_players.index)
+                        if 'PTS' in team_players.columns: pra_series += team_players['PTS']
+                        if 'REB' in team_players.columns: pra_series += team_players['REB']
+                        if 'AST' in team_players.columns: pra_series += team_players['AST']
+                        team_players['PRA'] = pra_series
+                        
+                        # Parse minutes for sorting
+                        def parse_min(x):
+                            try:
+                                if pd.isna(x): return 0
+                                if isinstance(x, str):
+                                    if ':' in x:
+                                        m, s = x.split(':')
+                                        return float(m) + float(s)/60
+                                    return float(x)
+                                return float(x)
+                            except:
+                                return 0
+                        
+                        if 'MIN' in team_players.columns:
+                            team_players['MIN_SORT'] = team_players['MIN'].apply(parse_min)
+                        else:
+                            team_players['MIN_SORT'] = 0
+                        
+                        # Sort
+                        team_players = team_players.sort_values(by=['PRA', 'MIN_SORT'], ascending=[False, False])
+                    except Exception as e:
+                        print(f"DEBUG: Sorting error: {e}")
+                    
+                    # Team Header
+                    tk.Label(scrollable_frame, text=f"{team_abbr} Stats", bg='#000000', fg='#ffffff',
+                            font=('Arial', 16, 'bold'), pady=10).pack(fill=tk.X, padx=10)
+                    
+                    # Create Treeview for team stats
+                    cols = ['PLAYER_NAME', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO', 'PF', 'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT', 'FTM', 'FTA', 'FT_PCT', 'PLUS_MINUS']
+                    
+                    # Filter cols that exist
+                    cols = [c for c in cols if c in player_stats.columns]
+                    
+                    tree_frame = tk.Frame(scrollable_frame, bg='#000000')
+                    tree_frame.pack(fill=tk.X, padx=10, pady=5)
+                    
+                    tree = ttk.Treeview(tree_frame, columns=cols, show='headings', 
+                                      height=len(team_players), style="BoxScore.Treeview")
+                    
+                    # Configure columns
+                    col_widths = {
+                        'PLAYER_NAME': 150, 'MIN': 50, 'PTS': 40, 'REB': 40, 'AST': 40,
+                        'STL': 40, 'BLK': 40, 'TO': 40, 'PF': 40,
+                        'FGM': 40, 'FGA': 40, 'FG_PCT': 50,
+                        'FG3M': 40, 'FG3A': 40, 'FG3_PCT': 50,
+                        'FTM': 40, 'FTA': 40, 'FT_PCT': 50, 'PLUS_MINUS': 50
+                    }
+                    
+                    for col in cols:
+                        header = col.replace('PLAYER_NAME', 'Player').replace('FG_PCT', 'FG%').replace('FG3_PCT', '3P%').replace('FT_PCT', 'FT%').replace('PLUS_MINUS', '+/-')
+                        tree.heading(col, text=header, anchor='center')
+                        tree.column(col, width=col_widths.get(col, 50), anchor='center')
+                    
+                    if 'PLAYER_NAME' in cols:
+                        tree.column('PLAYER_NAME', anchor='w')
+                    
+                    # Insert data
+                    for _, row in team_players.iterrows():
+                        vals = []
+                        for col in cols:
+                            val = row.get(col, '')
+                            if col in ['FG_PCT', 'FG3_PCT', 'FT_PCT']:
+                                try:
+                                    vals.append(f"{float(val)*100:.1f}%" if val is not None else "")
+                                except:
+                                    vals.append(str(val))
+                            elif col == 'MIN':
+                                 vals.append(str(val))
+                            else:
+                                 vals.append(str(val))
+                        tree.insert('', 'end', values=vals)
+                    
+                    tree.pack(fill=tk.X)
+            else:
+                tk.Label(scrollable_frame, text="Player stats format not recognized", bg='#000000', fg='#ff6b6b').pack(pady=20)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load box score: {str(e)}")
+
 
 def main():
     root = tk.Tk()
